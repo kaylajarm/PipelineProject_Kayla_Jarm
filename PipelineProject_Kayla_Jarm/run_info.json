@@ -1,0 +1,13 @@
+{
+	"n_targets": 169,
+	"n_bootstraps": 0,
+	"n_processed": 7500,
+	"n_pseudoaligned": 3716,
+	"n_unique": 3571,
+	"p_pseudoaligned": 49.5,
+	"p_unique": 47.6,
+	"kallisto_version": "0.50.1",
+	"index_version": 13,
+	"start_time": "Fri Mar  1 05:53:04 2024",
+	"call": "kallisto quant -i PipelineProject_Kayla_Jarm/NC_006273.2_index.idx -o PipelineProject_Kayla_Jarm --single -l 200 -s 20 /Users/kaylajarm/Desktop/Python-Pipeline-Kayla-Jarm/SRR5660045_2.fastq"
+}

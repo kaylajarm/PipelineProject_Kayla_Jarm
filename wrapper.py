@@ -1,88 +1,165 @@
+from Bio import Entrez, SeqIO
 import os
-from Bio import SeqIO
 import subprocess
+import numpy as np
 import glob
-import statistics
 
 
-# Define your first and last name
-first_name = "Kayla"
-last_name = "Jarm"
+def create_project_directory(directory_name):
+    # Create project directory if it doesn't exist
+    if not os.path.exists(directory_name):
+        os.makedirs(directory_name)
 
-# Create directory
-output_dir = f"PipelineProject_{first_name}_{last_name}"
-os.system(f"mkdir {output_dir}")
-os.chdir(output_dir)
+def retrieve_genbank(accession):
+    Entrez.email = "kayla.jarm@example.com"  # Replace with your email address
+    handle = Entrez.efetch(db="nucleotide", id=accession, rettype="gb", retmode="text")
+    return handle.read()
 
-# Function to extract CDS features from GenBank file and generate FASTA file
-def extract_cds(genbank_file, output_fasta):
-    with open(genbank_file, "r") as gb_fh, open(output_fasta, "w") as fasta_fh:
-        for record in SeqIO.parse(gb_fh, "genbank"):
-            for feature in record.features:
-                if feature.type == "CDS":
-                    protein_id = feature.qualifiers.get("protein_id", ["Unknown"])[0]
-                    fasta_fh.write(f">{protein_id}\n{feature.location.extract(record).seq}\n")
+def extract_cds_features(genbank_data):
+    cds_features = []
+    for record in SeqIO.parse(genbank_data, "genbank"):
+        for feature in record.features:
+            if feature.type == "CDS":
+                cds_features.append(feature)
+    return cds_features
 
-# Paths
-genbank_file = "/Users/kaylajarm/Desktop/Python-Pipeline-Kayla-Jarm/NC_006273.2.gb"
-output_fasta = "/Users/kaylajarm/Desktop/Python-Pipeline-Kayla-Jarm/HCMV_CDS.fasta"
-log_file = "/Users/kaylajarm/Desktop/Python-Pipeline-Kayla-Jarm/PipelineProject.log"
+def write_fasta_file(cds_features, output_file, record):
+    with open(output_file, "w") as fasta_out:
+        for feature in cds_features:
+            protein_id = feature.qualifiers.get("protein_id", ["unknown_protein_id"])[0]
+            sequence = feature.location.extract(record.seq)
+            fasta_out.write(f">{protein_id}\n{sequence}\n")
 
-# Step 2: Extract CDS features and generate FASTA file
-extract_cds(genbank_file, output_fasta)
+def build_kallisto_index(fasta_file, index_name):
+    os.system(f"kallisto index -i {index_name} {fasta_file}")
 
-# Step 3: Count the number of CDS in the HCMV genome
-num_cds = sum(1 for record in SeqIO.parse(genbank_file, "genbank") for feature in record.features if feature.type == "CDS")
+def write_to_log(log_file, num_cds):
+    with open(log_file, "a") as log:
+        log.write(f"The HCMV genome (NC_006273.2) has {num_cds} CDS.\n")
 
-# Step 4: Write number of CDS to log file
-with open(log_file, "w") as log_fh:
-    log_fh.write(f"The HCMV genome (NC_006273.2) has {num_cds} CDS.\n")
+def process_fastq_files(fastq_files, srr_numbers, output_directory, index_name, log_file):
+    os.makedirs(output_directory, exist_ok=True)  # Ensure output directory exists
+    
+    # Write header to log file
+    # Write header to log file with the desired label for condition
+    with open(log_file, "a") as log:
+        log.write("sample\texperimental_condition\tmin_tpm\tmed_tpm\tmean_tpm\tmax_tpm\n")
 
-# Step 5: Build Kallisto index
-kallisto_index_output = "HCMV_index.idx"
-subprocess.run(["kallisto", "index", "-i", kallisto_index_output, output_fasta])
 
-# Function to parse abundance.tsv file and calculate TPM statistics
-def calculate_tpm_stats(abundance_file):
-    tpm_values = []
-    with open(abundance_file, "r") as file:
-        next(file)  # Skip header
-        for line in file:
+    for fastq_file, srr_number in zip(fastq_files, srr_numbers):
+        # Run kallisto quantification
+        output_file = run_kallisto_quant(fastq_file, output_directory, index_name)
+        
+        # Check if kallisto quantification was successful
+        if output_file is None:
+            print(f"Skipping processing of {fastq_file} due to kallisto quantification failure")
+            continue
+        
+        # Extract abundance information
+        abundances = extract_abundance(output_file)
+        
+        # Calculate TPM statistics
+        tpm_values = [float(tpm) for tpm in abundances.values()]
+        min_tpm = np.min(tpm_values)
+        med_tpm = np.median(tpm_values)
+        mean_tpm = np.mean(tpm_values)
+        max_tpm = np.max(tpm_values)
+        
+        # Write TPM statistics to log file
+        with open(log_file, "a") as log:
+            log.write(f"{srr_number}\tcondition\t{min_tpm}\t{med_tpm}\t{mean_tpm}\t{max_tpm}\n")
+        
+        print(f"Processed {fastq_file} (SRR: {srr_number}) and calculated TPM statistics")
+
+
+
+def run_kallisto_quant(fastq_file, output_directory, index_name):
+    # Construct output file path
+    output_file = os.path.join(output_directory, "abundance.tsv")
+
+    # Run kallisto quant with single-end flag
+    result = subprocess.run(["kallisto", "quant", "-i", index_name, "-o", output_directory, "--single", "-l", "200", "-s", "20", fastq_file])
+
+    
+    # Check if kallisto quantification was successful
+    if result.returncode != 0:
+        print(f"Error: kallisto quant failed for {fastq_file}")
+        return None
+
+    # Return path to abundance file
+    return output_file
+
+
+def extract_abundance(output_file):
+    abundances = {}
+    with open(output_file, "r") as f:
+        next(f)  # Skip header line
+        for line in f:
             fields = line.strip().split("\t")
-            tpm = float(fields[4])  # TPM value is at index 4
-            tpm_values.append(tpm)
-    min_tpm = min(tpm_values)
-    med_tpm = statistics.median(tpm_values)
-    mean_tpm = statistics.mean(tpm_values)
-    max_tpm = max(tpm_values)
-    return min_tpm, med_tpm, mean_tpm, max_tpm
+            transcript_id = fields[0]
+            abundance = fields[4]  # Adjust this index according to kallisto output format
+            abundances[transcript_id] = abundance
+    return abundances
 
-# List of donor FASTQ files
-donor_fastq_files = glob.glob("Donor*_*.fastq")  # Assumes fastq files are in the current directory
+def write_abundance_tsv(abundances, output_file):
+    with open(output_file, "w") as f:
+        f.write("Transcript ID\tAbundance\n")
+        for transcript_id, abundance in abundances.items():
+            f.write(f"{transcript_id}\t{abundance}\n")
 
-# Path to the log file
-log_file_path = "/Users/kaylajarm/Desktop/Python-Pipeline-Kayla-Jarm/PipelineProject.log"
 
-# Write header to log file
-with open(log_file_path, "a") as log_file:  # Open in append mode ("a")
-    log_file.write("sample condition min_tpm med_tpm mean_tpm max_tpm\n")
+import glob
 
-# Iterate over each donor FASTQ file
-for fastq_file in donor_fastq_files:
-    sample_condition = os.path.splitext(os.path.basename(fastq_file))[0]  # Extract sample condition from file name
-    
-    # Assuming the output directory for each sample is named after the sample condition
-    abundance_file = "/Users/kaylajarm/Desktop/Python-Pipeline-Kayla-Jarm/abundance.tsv"
-    
-    if not os.path.exists(abundance_file):
-        print(f"Abundance file not found for sample {sample_condition}. Skipping...")
-        continue
-    
-    # Calculate TPM statistics
-    min_tpm, med_tpm, mean_tpm, max_tpm = calculate_tpm_stats(abundance_file)
-    
-    # Append details to log file
-    with open(log_file_path, "a") as log_file:  # Open in append mode ("a")
-        log_file.write(f"{sample_condition} {min_tpm} {med_tpm} {mean_tpm} {max_tpm}\n")
+def main():
+    # Define project directory and filenames
+    project_directory = "PipelineProject_Kayla_Jarm"
+    log_file = os.path.join(project_directory, "PipelineProject.log")
+    accession = "NC_006273.2"
+    genbank_filename = os.path.join(project_directory, f"{accession}.gb")
+    fasta_filename = os.path.join(project_directory, f"{accession}.fasta")
+    index_name = os.path.join(project_directory, f"{accession}_index.idx")
 
-print("TPM statistics calculation and logging complete.")
+    # Define pattern to match fastq files
+    fastq_pattern = "/Users/kaylajarm/Desktop/Python-Pipeline-Kayla-Jarm/SRR*.fastq"
+
+    # Retrieve list of fastq files using glob
+    fastq_files = sorted(glob.glob(fastq_pattern))
+
+    srr_numbers = []
+    for fastq_file in fastq_files:
+        srr_number = os.path.basename(fastq_file).split("_")[0]
+        srr_numbers.append(srr_number)
+
+    fastq_output_directory = project_directory  # You can change this if you want to save output files in a different directory
+
+    # Create project directory
+    create_project_directory(project_directory)
+
+    # Retrieve GenBank file
+    genbank_data = retrieve_genbank(accession)
+    with open(genbank_filename, "w") as gb_out:
+        gb_out.write(genbank_data)
+
+    # Extract CDS features
+    cds_features = extract_cds_features(genbank_filename)
+
+    # Get the first record for extracting sequences
+    first_record = SeqIO.read(genbank_filename, "genbank")
+
+    # Write CDS features to FASTA file
+    write_fasta_file(cds_features, fasta_filename, first_record)
+
+    # Build kallisto index
+    build_kallisto_index(fasta_filename, index_name)
+
+    # Write to log file
+    num_cds = len(cds_features)
+    write_to_log(log_file, num_cds)
+
+    # Process FASTQ files
+    process_fastq_files(fastq_files, srr_numbers, fastq_output_directory, index_name, log_file)
+
+    print("Transcriptome index built successfully.")
+
+if __name__ == "__main__":
+    main()
